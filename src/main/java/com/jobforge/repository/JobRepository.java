@@ -32,8 +32,7 @@ public class JobRepository {
             rs.getString("idempotency_key"),
             rs.getObject("api_key_id", UUID.class),
             rs.getTimestamp("created_at").toInstant(),
-            rs.getTimestamp("updated_at").toInstant()
-    );
+            rs.getTimestamp("updated_at").toInstant());
 
     private final JdbcTemplate jdbc;
 
@@ -45,6 +44,7 @@ public class JobRepository {
         return ts == null ? null : ts.toInstant();
     }
 
+    // Insert a new job into the database
     public Optional<Job> insert(
             String type,
             String payloadJson,
@@ -71,18 +71,18 @@ public class JobRepository {
                 Timestamp.from(runAt),
                 maxAttempts,
                 idempotencyKey,
-                apiKeyId
-        ).stream().findFirst();
+                apiKeyId).stream().findFirst();
     }
 
+    // Find a job using its ID
     public Optional<Job> findById(UUID id) {
         return jdbc.query(
                 "SELECT * FROM jobs WHERE id = ?",
                 MAPPER,
-                id
-        ).stream().findFirst();
+                id).stream().findFirst();
     }
 
+    // List jobs, optionally filtered by status
     public List<Job> list(JobStatus status, int limit, int offset) {
 
         if (status == null) {
@@ -99,5 +99,62 @@ public class JobRepository {
                 ORDER BY created_at DESC
                 LIMIT ? OFFSET ?
                 """, MAPPER, status.name(), limit, offset);
+    }
+
+    // Atomically claim the next available job
+    public Optional<Job> claimNext(String workerId, int leaseSeconds) {
+
+        String sql = """
+                UPDATE jobs
+                   SET status = 'RUNNING',
+                       locked_by = ?,
+                       locked_until = now() + (? * interval '1 second'),
+                       attempts = attempts + 1,
+                       updated_at = now()
+                 WHERE id = (
+                       SELECT id FROM jobs
+                         WHERE (status = 'QUEUED' AND run_at <= now())
+                            OR (status = 'RUNNING' AND locked_until < now())
+                         ORDER BY priority DESC, run_at
+                         FOR UPDATE SKIP LOCKED
+                         LIMIT 1
+                 )
+                RETURNING *
+                """;
+
+        return jdbc.query(sql, MAPPER, workerId, leaseSeconds)
+                .stream()
+                .findFirst();
+    }
+
+    // Mark a job as successfully completed
+    public boolean markSucceeded(UUID id, String workerId) {
+
+        return jdbc.update("""
+                UPDATE jobs
+                   SET status = 'SUCCEEDED',
+                       locked_by = NULL,
+                       locked_until = NULL,
+                       updated_at = now()
+                 WHERE id = ?
+                   AND status = 'RUNNING'
+                   AND locked_by = ?
+                """, id, workerId) == 1;
+    }
+
+    // Mark a job as permanently failed
+    public boolean markDead(UUID id, String workerId, String error) {
+
+        return jdbc.update("""
+                UPDATE jobs
+                   SET status = 'DEAD',
+                       locked_by = NULL,
+                       locked_until = NULL,
+                       last_error = ?,
+                       updated_at = now()
+                 WHERE id = ?
+                   AND status = 'RUNNING'
+                   AND locked_by = ?
+                """, error, id, workerId) == 1;
     }
 }

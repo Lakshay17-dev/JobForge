@@ -19,3 +19,8 @@ management:
     web:
       exposure:
         include: health,info
+jobforge:
+  worker:
+    enabled: true
+    threads: 4
+    poll-interval-ms: 500
