@@ -44,15 +44,10 @@ public class JobRepository {
         return ts == null ? null : ts.toInstant();
     }
 
-    // Insert a new job into the database
-    public Optional<Job> insert(
-            String type,
-            String payloadJson,
-            int priority,
-            Instant runAt,
-            int maxAttempts,
-            String idempotencyKey,
-            UUID apiKeyId) {
+    // Insert a new job
+    public Optional<Job> insert(String type, String payloadJson, int priority,
+            Instant runAt, int maxAttempts,
+            String idempotencyKey, UUID apiKeyId) {
 
         String sql = """
                 INSERT INTO jobs (id, type, payload, status, priority, run_at,
@@ -61,20 +56,12 @@ public class JobRepository {
                 RETURNING *
                 """;
 
-        return jdbc.query(
-                sql,
-                MAPPER,
-                UUID.randomUUID(),
-                type,
-                payloadJson,
-                priority,
-                Timestamp.from(runAt),
-                maxAttempts,
-                idempotencyKey,
-                apiKeyId).stream().findFirst();
+        return jdbc.query(sql, MAPPER, UUID.randomUUID(), type, payloadJson,
+                priority, Timestamp.from(runAt), maxAttempts,
+                idempotencyKey, apiKeyId).stream().findFirst();
     }
 
-    // Find a job using its ID
+    // Find a job by ID
     public Optional<Job> findById(UUID id) {
         return jdbc.query(
                 "SELECT * FROM jobs WHERE id = ?",
@@ -82,7 +69,7 @@ public class JobRepository {
                 id).stream().findFirst();
     }
 
-    // List jobs, optionally filtered by status
+    // List jobs with optional status filter and pagination
     public List<Job> list(JobStatus status, int limit, int offset) {
 
         if (status == null) {
@@ -117,17 +104,15 @@ public class JobRepository {
                             OR (status = 'RUNNING' AND locked_until < now())
                          ORDER BY priority DESC, run_at
                          FOR UPDATE SKIP LOCKED
-                         LIMIT 1
-                 )
+                         LIMIT 1)
                 RETURNING *
                 """;
 
         return jdbc.query(sql, MAPPER, workerId, leaseSeconds)
-                .stream()
-                .findFirst();
+                .stream().findFirst();
     }
 
-    // Mark a job as successfully completed
+    // Mark a job as successful
     public boolean markSucceeded(UUID id, String workerId) {
 
         return jdbc.update("""
@@ -156,5 +141,49 @@ public class JobRepository {
                    AND status = 'RUNNING'
                    AND locked_by = ?
                 """, error, id, workerId) == 1;
+    }
+
+    // Schedule a failed job for retry
+    public boolean markForRetry(UUID id, String workerId,
+            long delayMillis, String error) {
+
+        return jdbc.update("""
+                UPDATE jobs
+                   SET status = 'QUEUED',
+                       run_at = now() + (? * interval '1 millisecond'),
+                       last_error = ?,
+                       locked_by = NULL,
+                       locked_until = NULL,
+                       updated_at = now()
+                 WHERE id = ?
+                   AND status = 'RUNNING'
+                   AND locked_by = ?
+                """, delayMillis, error, id, workerId) == 1;
+    }
+
+    // Manually retry a failed job
+    public boolean requeueDead(UUID id) {
+
+        return jdbc.update("""
+                UPDATE jobs
+                   SET status = 'QUEUED',
+                       attempts = 0,
+                       run_at = now(),
+                       updated_at = now()
+                 WHERE id = ?
+                   AND status = 'DEAD'
+                """, id) == 1;
+    }
+
+    // Cancel a queued job
+    public boolean cancelQueued(UUID id) {
+
+        return jdbc.update("""
+                UPDATE jobs
+                   SET status = 'CANCELLED',
+                       updated_at = now()
+                 WHERE id = ?
+                   AND status = 'QUEUED'
+                """, id) == 1;
     }
 }
