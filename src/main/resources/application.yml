@@ -24,3 +24,8 @@ jobforge:
     enabled: true
     threads: 4
     poll-interval-ms: 500
+    lease-seconds: 60
+
+  retry:
+    base-delay-seconds: 2
+    max-delay-seconds: 300
