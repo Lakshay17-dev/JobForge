@@ -1,6 +1,8 @@
 
 package com.jobforge.service;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jobforge.domain.Job;
 import com.jobforge.domain.JobStatus;
 import com.jobforge.domain.JobTransitions;
@@ -9,6 +11,7 @@ import com.jobforge.web.SubmitJobRequest;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 import org.springframework.stereotype.Service;
@@ -17,34 +20,62 @@ import org.springframework.stereotype.Service;
 public class JobService {
 
     private final JobRepository repo;
+    private final ObjectMapper mapper;
 
-    public JobService(JobRepository repo) {
+    public JobService(JobRepository repo, ObjectMapper mapper) {
         this.repo = repo;
+        this.mapper = mapper;
     }
 
     // Result of job submission
     public record SubmitResult(Job job, boolean created) {
     }
 
-    // Submit a new job
+    // Submit a new job or return an existing job for a duplicate request.
     public SubmitResult submit(SubmitJobRequest req, String idempotencyKey,
-                               UUID apiKeyId) {
+            UUID apiKeyId) {
 
         int priority = req.priority() == null ? 0 : req.priority();
         int maxAttempts = req.maxAttempts() == null ? 5 : req.maxAttempts();
         Instant runAt = req.runAt() == null ? Instant.now() : req.runAt();
 
-        Job job = repo.insert(
+        Optional<Job> inserted = repo.insert(
                 req.type(),
                 req.payload().toString(),
                 priority,
                 runAt,
                 maxAttempts,
                 idempotencyKey,
-                apiKeyId
-        ).orElseThrow();
+                apiKeyId);
 
-        return new SubmitResult(job, true);
+        if (inserted.isPresent()) {
+            return new SubmitResult(inserted.get(), true);
+        }
+
+        // An existing job was found for this idempotency key.
+        Job existing = repo.findByIdempotencyKey(idempotencyKey)
+                .orElseThrow(() -> new JobConflictException(
+                        "Idempotency key conflict; please retry"));
+
+        // Compare the original request with the new request.
+        try {
+            boolean sameType = existing.type().equals(req.type());
+
+            boolean samePayload = mapper.readTree(existing.payload())
+                    .equals(mapper.valueToTree(req.payload()));
+
+            if (!sameType || !samePayload) {
+                throw new JobConflictException(
+                        "Idempotency key was already used with a different request");
+            }
+
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException(
+                    "Could not compare job payloads", e);
+        }
+
+        // Same key and same request: return the original job.
+        return new SubmitResult(existing, false);
     }
 
     // Get a job by ID

@@ -44,7 +44,7 @@ public class JobRepository {
         return ts == null ? null : ts.toInstant();
     }
 
-    // Insert a new job
+    // Insert a new job; return empty if the idempotency key already exists.
     public Optional<Job> insert(String type, String payloadJson, int priority,
             Instant runAt, int maxAttempts,
             String idempotencyKey, UUID apiKeyId) {
@@ -53,6 +53,8 @@ public class JobRepository {
                 INSERT INTO jobs (id, type, payload, status, priority, run_at,
                                   max_attempts, idempotency_key, api_key_id)
                 VALUES (?, ?, ?::jsonb, 'QUEUED', ?, ?, ?, ?, ?)
+                ON CONFLICT (idempotency_key)
+                    WHERE idempotency_key IS NOT NULL DO NOTHING
                 RETURNING *
                 """;
 
@@ -61,7 +63,15 @@ public class JobRepository {
                 idempotencyKey, apiKeyId).stream().findFirst();
     }
 
-    // Find a job by ID
+    // Find an existing job using its idempotency key.
+    public Optional<Job> findByIdempotencyKey(String idempotencyKey) {
+        return jdbc.query(
+                "SELECT * FROM jobs WHERE idempotency_key = ?",
+                MAPPER,
+                idempotencyKey).stream().findFirst();
+    }
+
+    // Find a job by ID.
     public Optional<Job> findById(UUID id) {
         return jdbc.query(
                 "SELECT * FROM jobs WHERE id = ?",
@@ -69,7 +79,7 @@ public class JobRepository {
                 id).stream().findFirst();
     }
 
-    // List jobs with optional status filter and pagination
+    // List jobs with optional status filter and pagination.
     public List<Job> list(JobStatus status, int limit, int offset) {
 
         if (status == null) {
@@ -88,7 +98,7 @@ public class JobRepository {
                 """, MAPPER, status.name(), limit, offset);
     }
 
-    // Atomically claim the next available job
+    // Atomically claim the next available job.
     public Optional<Job> claimNext(String workerId, int leaseSeconds) {
 
         String sql = """
@@ -112,7 +122,7 @@ public class JobRepository {
                 .stream().findFirst();
     }
 
-    // Mark a job as successful
+    // Mark a job as successful.
     public boolean markSucceeded(UUID id, String workerId) {
 
         return jdbc.update("""
@@ -127,7 +137,7 @@ public class JobRepository {
                 """, id, workerId) == 1;
     }
 
-    // Mark a job as permanently failed
+    // Mark a job as permanently failed.
     public boolean markDead(UUID id, String workerId, String error) {
 
         return jdbc.update("""
@@ -143,7 +153,7 @@ public class JobRepository {
                 """, error, id, workerId) == 1;
     }
 
-    // Schedule a failed job for retry
+    // Schedule a failed job for retry.
     public boolean markForRetry(UUID id, String workerId,
             long delayMillis, String error) {
 
@@ -161,7 +171,7 @@ public class JobRepository {
                 """, delayMillis, error, id, workerId) == 1;
     }
 
-    // Manually retry a failed job
+    // Manually retry a failed job.
     public boolean requeueDead(UUID id) {
 
         return jdbc.update("""
@@ -175,7 +185,7 @@ public class JobRepository {
                 """, id) == 1;
     }
 
-    // Cancel a queued job
+    // Cancel a queued job.
     public boolean cancelQueued(UUID id) {
 
         return jdbc.update("""
