@@ -104,22 +104,42 @@ public class JobRepository {
         String sql = """
                 UPDATE jobs
                    SET status = 'RUNNING',
-                       locked_by = ?,
+                        locked_by = ?,
                        locked_until = now() + (? * interval '1 second'),
                        attempts = attempts + 1,
                        updated_at = now()
-                 WHERE id = (
+                   WHERE id = (
                        SELECT id FROM jobs
-                         WHERE (status = 'QUEUED' AND run_at <= now())
-                            OR (status = 'RUNNING' AND locked_until < now())
-                         ORDER BY priority DESC, run_at
-                         FOR UPDATE SKIP LOCKED
-                         LIMIT 1)
-                RETURNING *
-                """;
+                           WHERE (status = 'QUEUED' AND run_at <= now())
+                               OR (status = 'RUNNING' AND locked_until < now()
+                                   AND attempts < max_attempts)
+                           ORDER BY priority DESC, run_at
+                           FOR UPDATE SKIP LOCKED
+                           LIMIT 1)
+                   RETURNING *
+                   """;
 
         return jdbc.query(sql, MAPPER, workerId, leaseSeconds)
                 .stream().findFirst();
+    }
+
+    /**
+     * Marks abandoned jobs that have exhausted all attempts as DEAD.
+     */
+    public int reapExhausted() {
+
+        return jdbc.update("""
+                UPDATE jobs
+                SET status = 'DEAD',
+                    locked_by = NULL,
+                    locked_until = NULL,
+                    last_error = COALESCE(last_error || ' | ', '')
+                                || 'lease expired after max attempts',
+                    updated_at = now()
+                WHERE status = 'RUNNING'
+                AND locked_until < now()
+                AND attempts >= max_attempts
+                """);
     }
 
     // Mark a job as successful.
