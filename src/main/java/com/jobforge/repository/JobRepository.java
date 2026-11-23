@@ -44,30 +44,52 @@ public class JobRepository {
         return ts == null ? null : ts.toInstant();
     }
 
-    // Insert a new job; return empty if the idempotency key already exists.
-    public Optional<Job> insert(String type, String payloadJson, int priority,
-            Instant runAt, int maxAttempts,
-            String idempotencyKey, UUID apiKeyId) {
+    // Insert a new job; return empty if the idempotency key
+    // already exists for this API key.
+    public Optional<Job> insert(
+            String type,
+            String payloadJson,
+            int priority,
+            Instant runAt,
+            int maxAttempts,
+            String idempotencyKey,
+            UUID apiKeyId) {
 
         String sql = """
-                INSERT INTO jobs (id, type, payload, status, priority, run_at,
-                                  max_attempts, idempotency_key, api_key_id)
+                INSERT INTO jobs (
+                    id, type, payload, status, priority, run_at,
+                    max_attempts, idempotency_key, api_key_id
+                )
                 VALUES (?, ?, ?::jsonb, 'QUEUED', ?, ?, ?, ?, ?)
-                ON CONFLICT (idempotency_key)
+                ON CONFLICT (api_key_id, idempotency_key)
                     WHERE idempotency_key IS NOT NULL DO NOTHING
                 RETURNING *
                 """;
 
-        return jdbc.query(sql, MAPPER, UUID.randomUUID(), type, payloadJson,
-                priority, Timestamp.from(runAt), maxAttempts,
-                idempotencyKey, apiKeyId).stream().findFirst();
+        return jdbc.query(
+                sql,
+                MAPPER,
+                UUID.randomUUID(),
+                type,
+                payloadJson,
+                priority,
+                Timestamp.from(runAt),
+                maxAttempts,
+                idempotencyKey,
+                apiKeyId).stream().findFirst();
     }
 
-    // Find an existing job using its idempotency key.
-    public Optional<Job> findByIdempotencyKey(String idempotencyKey) {
-        return jdbc.query(
-                "SELECT * FROM jobs WHERE idempotency_key = ?",
+    // Find an existing job using its API key and idempotency key.
+    public Optional<Job> findByIdempotencyKey(
+            UUID apiKeyId,
+            String idempotencyKey) {
+
+        return jdbc.query("""
+                SELECT * FROM jobs
+                WHERE api_key_id = ? AND idempotency_key = ?
+                """,
                 MAPPER,
+                apiKeyId,
                 idempotencyKey).stream().findFirst();
     }
 
@@ -104,20 +126,21 @@ public class JobRepository {
         String sql = """
                 UPDATE jobs
                    SET status = 'RUNNING',
-                        locked_by = ?,
+                       locked_by = ?,
                        locked_until = now() + (? * interval '1 second'),
                        attempts = attempts + 1,
                        updated_at = now()
                    WHERE id = (
                        SELECT id FROM jobs
-                           WHERE (status = 'QUEUED' AND run_at <= now())
-                               OR (status = 'RUNNING' AND locked_until < now()
-                                   AND attempts < max_attempts)
-                           ORDER BY priority DESC, run_at
-                           FOR UPDATE SKIP LOCKED
-                           LIMIT 1)
-                   RETURNING *
-                   """;
+                       WHERE (status = 'QUEUED' AND run_at <= now())
+                          OR (status = 'RUNNING' AND locked_until < now()
+                              AND attempts < max_attempts)
+                       ORDER BY priority DESC, run_at
+                       FOR UPDATE SKIP LOCKED
+                       LIMIT 1
+                   )
+                RETURNING *
+                """;
 
         return jdbc.query(sql, MAPPER, workerId, leaseSeconds)
                 .stream().findFirst();
@@ -137,8 +160,8 @@ public class JobRepository {
                                 || 'lease expired after max attempts',
                     updated_at = now()
                 WHERE status = 'RUNNING'
-                AND locked_until < now()
-                AND attempts >= max_attempts
+                  AND locked_until < now()
+                  AND attempts >= max_attempts
                 """);
     }
 
@@ -174,8 +197,11 @@ public class JobRepository {
     }
 
     // Schedule a failed job for retry.
-    public boolean markForRetry(UUID id, String workerId,
-            long delayMillis, String error) {
+    public boolean markForRetry(
+            UUID id,
+            String workerId,
+            long delayMillis,
+            String error) {
 
         return jdbc.update("""
                 UPDATE jobs

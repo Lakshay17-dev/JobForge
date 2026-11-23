@@ -20,6 +20,8 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import com.jobforge.security.ApiKeyFilter;
+import jakarta.servlet.http.HttpServletRequest;
 
 @RestController
 @RequestMapping("/jobs")
@@ -34,12 +36,17 @@ public class JobController {
     }
 
     // Submit a new job
+
     @PostMapping
     public ResponseEntity<JobResponse> submit(
             @Valid @RequestBody SubmitJobRequest request,
-            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey) {
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+            HttpServletRequest http) {
 
-        JobService.SubmitResult result = service.submit(request, idempotencyKey, null);
+        UUID apiKeyId = (UUID) http.getAttribute(
+                ApiKeyFilter.API_KEY_ID);
+
+        JobService.SubmitResult result = service.submit(request, idempotencyKey, apiKeyId);
 
         HttpStatus status = result.created()
                 ? HttpStatus.CREATED

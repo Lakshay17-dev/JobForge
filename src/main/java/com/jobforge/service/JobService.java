@@ -32,7 +32,9 @@ public class JobService {
     }
 
     // Submit a new job or return an existing job for a duplicate request.
-    public SubmitResult submit(SubmitJobRequest req, String idempotencyKey,
+    public SubmitResult submit(
+            SubmitJobRequest req,
+            String idempotencyKey,
             UUID apiKeyId) {
 
         int priority = req.priority() == null ? 0 : req.priority();
@@ -52,8 +54,8 @@ public class JobService {
             return new SubmitResult(inserted.get(), true);
         }
 
-        // An existing job was found for this idempotency key.
-        Job existing = repo.findByIdempotencyKey(idempotencyKey)
+        // An existing job was found for this API key and idempotency key.
+        Job existing = repo.findByIdempotencyKey(apiKeyId, idempotencyKey)
                 .orElseThrow(() -> new JobConflictException(
                         "Idempotency key conflict; please retry"));
 

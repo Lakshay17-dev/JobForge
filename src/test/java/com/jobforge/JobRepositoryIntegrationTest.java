@@ -9,6 +9,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.jobforge.domain.Job;
 import com.jobforge.domain.JobStatus;
 import com.jobforge.repository.JobRepository;
+import com.jobforge.service.ApiKeyService;
+
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -20,6 +22,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 
@@ -27,6 +30,9 @@ class JobRepositoryIntegrationTest extends PostgresIntegrationTest {
 
     @Autowired
     private JobRepository repo;
+
+    @Autowired
+    private ApiKeyService keys;
 
     private Job insertJob(int priority, Instant runAt, int maxAttempts) {
         return repo.insert("echo", "{}", priority, runAt, maxAttempts,
@@ -112,15 +118,23 @@ class JobRepositoryIntegrationTest extends PostgresIntegrationTest {
 
     @Test
     void duplicateIdempotencyKeyInsertsNothing() {
-        Optional<Job> first = repo.insert("echo", "{}", 0, Instant.now(),
-                5, "key-1", null);
-        Optional<Job> second = repo.insert("echo", "{}", 0, Instant.now(),
-                5, "key-1", null);
+        UUID keyId = keys.create("repo-test").id();
+
+        Optional<Job> first = repo.insert(
+                "echo", "{}", 0, Instant.now(),
+                5, "key-1", keyId);
+
+        Optional<Job> second = repo.insert(
+                "echo", "{}", 0, Instant.now(),
+                5, "key-1", keyId);
 
         assertTrue(first.isPresent());
         assertTrue(second.isEmpty());
-        assertEquals(first.get().id(),
-                repo.findByIdempotencyKey("key-1").orElseThrow().id());
+
+        assertEquals(
+                first.get().id(),
+                repo.findByIdempotencyKey(keyId, "key-1")
+                        .orElseThrow().id());
     }
 
     @Test
