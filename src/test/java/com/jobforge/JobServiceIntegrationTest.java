@@ -10,11 +10,14 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jobforge.domain.Job;
 import com.jobforge.domain.JobStatus;
 import com.jobforge.repository.JobRepository;
+import com.jobforge.service.ApiKeyService;
 import com.jobforge.service.JobConflictException;
 import com.jobforge.service.JobNotFoundException;
 import com.jobforge.service.JobService;
 import com.jobforge.web.SubmitJobRequest;
+
 import java.util.UUID;
+
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 
@@ -25,6 +28,9 @@ class JobServiceIntegrationTest extends PostgresIntegrationTest {
 
     @Autowired
     private JobRepository repo;
+
+    @Autowired
+    private ApiKeyService keys;
 
     private SubmitJobRequest request() {
         return new SubmitJobRequest(
@@ -37,11 +43,15 @@ class JobServiceIntegrationTest extends PostgresIntegrationTest {
 
     @Test
     void duplicateIdempotencyKeyReturnsTheExistingJob() {
-        JobService.SubmitResult first = service.submit(request(), "k1", null);
-        JobService.SubmitResult second = service.submit(request(), "k1", null);
+        UUID keyId = keys.create("service-test").id();
+
+        JobService.SubmitResult first = service.submit(request(), "k1", keyId);
+
+        JobService.SubmitResult second = service.submit(request(), "k1", keyId);
 
         assertTrue(first.created());
         assertFalse(second.created());
+
         assertEquals(first.job().id(), second.job().id());
     }
 
@@ -57,6 +67,7 @@ class JobServiceIntegrationTest extends PostgresIntegrationTest {
     @Test
     void runningJobCannotBeCancelled() {
         Job job = service.submit(request(), null, null).job();
+
         repo.claimNext("w1", 60);
 
         assertThrows(
