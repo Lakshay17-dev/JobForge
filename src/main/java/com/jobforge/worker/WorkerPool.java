@@ -3,6 +3,7 @@ package com.jobforge.worker;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jobforge.domain.Job;
+import com.jobforge.metrics.JobMetrics;
 import com.jobforge.repository.JobRepository;
 
 import java.time.Duration;
@@ -16,6 +17,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.SmartLifecycle;
 import org.springframework.stereotype.Component;
@@ -31,6 +33,7 @@ public class WorkerPool implements SmartLifecycle {
     private final ObjectMapper mapper;
     private final WorkerProperties props;
     private final BackoffPolicy backoff;
+    private final JobMetrics metrics;
 
     private final String workerId = "worker-" + UUID.randomUUID().toString().substring(0, 8);
 
@@ -45,13 +48,15 @@ public class WorkerPool implements SmartLifecycle {
             HandlerRegistry registry,
             ObjectMapper mapper,
             WorkerProperties props,
-            BackoffPolicy backoff) {
+            BackoffPolicy backoff,
+            JobMetrics metrics) {
 
         this.repo = repo;
         this.registry = registry;
         this.mapper = mapper;
         this.props = props;
         this.backoff = backoff;
+        this.metrics = metrics;
         this.slots = new Semaphore(props.threads());
     }
 
@@ -180,9 +185,12 @@ public class WorkerPool implements SmartLifecycle {
 
     private void execute(Job job) {
 
+        MDC.put("jobId", job.id().toString());
+
+        long startNanos = System.nanoTime();
+
         log.info(
-                "Running job {} type={} attempt={}",
-                job.id(),
+                "Running type={} attempt={}",
                 job.type(),
                 job.attempts());
 
@@ -194,17 +202,45 @@ public class WorkerPool implements SmartLifecycle {
 
             handler.handle(mapper.readTree(job.payload()));
 
-            repo.markSucceeded(job.id(), workerId);
+            Duration took = elapsed(startNanos);
 
-            log.info("Job {} succeeded", job.id());
+            if (repo.markSucceeded(job.id(), workerId)) {
+
+                metrics.success(took);
+
+                log.info(
+                        "Succeeded in {} ms",
+                        took.toMillis());
+
+            } else {
+
+                log.warn(
+                        "Finished, but the lease was lost; "
+                                + "another worker owns this job now");
+            }
 
         } catch (Exception e) {
 
-            handleFailure(job, e);
+            handleFailure(
+                    job,
+                    e,
+                    elapsed(startNanos));
+
+        } finally {
+
+            MDC.remove("jobId");
         }
     }
 
-    private void handleFailure(Job job, Exception e) {
+    private static Duration elapsed(long startNanos) {
+        return Duration.ofNanos(
+                System.nanoTime() - startNanos);
+    }
+
+    private void handleFailure(
+            Job job,
+            Exception e,
+            Duration took) {
 
         String error = truncate(e.toString());
 
@@ -212,9 +248,10 @@ public class WorkerPool implements SmartLifecycle {
 
             repo.markDead(job.id(), workerId, error);
 
+            metrics.dead(took);
+
             log.error(
-                    "Job {} is DEAD after {} attempts: {}",
-                    job.id(),
+                    "DEAD after {} attempts: {}",
                     job.attempts(),
                     error);
 
@@ -228,9 +265,10 @@ public class WorkerPool implements SmartLifecycle {
                     delay.toMillis(),
                     error);
 
+            metrics.retry(took);
+
             log.warn(
-                    "Job {} failed (attempt {}/{}), retry in {} ms: {}",
-                    job.id(),
+                    "Failed (attempt {}/{}), retry in {} ms: {}",
                     job.attempts(),
                     job.maxAttempts(),
                     delay.toMillis(),
