@@ -242,4 +242,13 @@ public class JobRepository {
                    AND status = 'QUEUED'
                 """, id) == 1;
     }
+
+    public long countByStatus(JobStatus status) {
+        Long count = jdbc.queryForObject(
+                "SELECT count(*) FROM jobs WHERE status = ?",
+                Long.class, status.name());
+
+        return count == null ? 0 : count;
+    }
+
 }

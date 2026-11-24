@@ -1,4 +1,8 @@
-﻿spring:
+﻿logging:
+  pattern:
+    console: "%d{HH:mm:ss.SSS} %-5level [%thread] [job=%X{jobId}] %logger{20} - %msg%n"
+
+spring:
   application:
     name: jobforge
 
@@ -18,7 +22,7 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        include: health,info,prometheus
 jobforge:
   worker:
     enabled: true
